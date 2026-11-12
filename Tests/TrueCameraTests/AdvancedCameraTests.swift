@@ -1,0 +1,281 @@
+import XCTest
+import AVFoundation
+import ImageIO
+import CoreLocation
+@testable import TrueCamera
+
+final class AdvancedCameraTests: XCTestCase {
+    func testNativeMovieModesDisableCustomPixelTransforms() {
+        var s = CameraSettings()
+        let old = s
+        s.horizonLock = true; s.zoomLock = true; s.filter = .vivid; s.mode = .spatial
+        s.normalize(changedFrom: old)
+        XCTAssertFalse(s.horizonLock); XCTAssertFalse(s.zoomLock); XCTAssertEqual(s.filter, .original)
+        XCTAssertTrue(s.usesNativeMoviePipeline)
+    }
+    func testProResAndLogForceNativePipeline() {
+        var s = CameraSettings(); let old = s
+        s.mode = .video; s.codec = .proRes422; s.colorProfile = .appleLog
+        s.normalize(changedFrom: old)
+        XCTAssertTrue(s.usesNativeMoviePipeline)
+        XCTAssertFalse(s.horizonLock)
+    }
+    func testExpandedResolutionAndFrameRateModel() {
+        XCTAssertEqual(Resolution.hd.longEdge, 1280)
+        var s = CameraSettings(); s.mode = .slowMotion; s.slowMotionFPS = 240; s.resolution = .hd
+        XCTAssertEqual(s.captureFPS, 240)
+        XCTAssertEqual(s.outputSize.width.rounded(), 720)
+        XCTAssertEqual(s.outputSize.height.rounded(), 1280)
+    }
+    func testSingleProRAWRejectsLiveCombinationButDualPreservesBothRequests() {
+        var single = CameraSettings(); single.dualPhotoCapture = false; single.raw = false; single.livePhoto = false
+        let old = single; single.raw = true; single.livePhoto = true; single.normalize(changedFrom: old)
+        XCTAssertTrue(single.raw); XCTAssertFalse(single.livePhoto)
+        var dual = CameraSettings(); dual.horizonLock = true; dual.zoomLock = true
+        dual.normalize(changedFrom: CameraSettings())
+        XCTAssertTrue(dual.raw); XCTAssertTrue(dual.livePhoto); XCTAssertTrue(dual.dualPhotoCapture)
+        XCTAssertFalse(dual.horizonLock); XCTAssertFalse(dual.zoomLock); XCTAssertFalse(dual.isProcessedPhoto)
+        var bayer = single; bayer.preferProRAW = false; bayer.livePhoto = true
+        bayer.normalize(changedFrom: single)
+        XCTAssertTrue(bayer.raw); XCTAssertTrue(bayer.livePhoto)
+    }
+    func testMetadataFieldsRoundTripThroughSettingsCodable() throws {
+        var s = CameraSettings(); s.metadataAuthor = "Author"; s.metadataCopyright = "Copyright"; s.metadataDescription = "Description"
+        let decoded = try JSONDecoder().decode(CameraSettings.self, from: JSONEncoder().encode(s))
+        XCTAssertEqual(decoded, s)
+    }
+    func testLegacySyntheticSettingsCannotAlterTrueCameraOutput() {
+        var s = CameraSettings(); let old = s
+        s.mode = .portrait; s.horizonLock = true; s.zoomLock = true
+        s.filter = .vivid; s.photographicStyle = .richContrast
+        s.portraitLighting = .studio; s.computationalPhoto = .night
+        s.styleWarmth = 0.8; s.styleTone = -0.6; s.portraitBlurRadius = 35
+        s.normalize(changedFrom: old)
+        XCTAssertEqual(s.mode, .photo); XCTAssertEqual(s.filter, .original)
+        XCTAssertEqual(s.photographicStyle, .standard); XCTAssertEqual(s.computationalPhoto, .off)
+        XCTAssertEqual(s.portraitLighting, .natural); XCTAssertEqual(s.portraitBlurRadius, 0)
+        XCTAssertEqual(s.styleTone, 0); XCTAssertEqual(s.styleWarmth, 0)
+        XCTAssertFalse(s.horizonLock); XCTAssertFalse(s.zoomLock); XCTAssertFalse(s.isProcessedPhoto)
+        XCTAssertTrue(s.raw); XCTAssertTrue(s.livePhoto)
+    }
+    func testOptionalColorManipulationNeverTurnsOnOrEnablesFlash() {
+        var s = CameraSettings(); let old = s
+        s.constantColor = true; s.autoRedEyeReduction = true; s.flash = .off
+        s.normalize(changedFrom: old)
+        XCTAssertFalse(s.constantColor); XCTAssertFalse(s.autoRedEyeReduction)
+        XCTAssertEqual(s.flash, .off); XCTAssertTrue(s.raw); XCTAssertTrue(s.livePhoto)
+    }
+    func testNativeMovieFramingUsesRepresentableOrientation() {
+        var s = CameraSettings(); let old = s
+        s.mode = .spatial; s.videoFraming = .square
+        s.normalize(changedFrom: old)
+        XCTAssertEqual(s.videoFraming,.portrait)
+    }
+    func testPhotoMetadataContainsStandardTIFFAndIPTCFields() throws {
+        var s = CameraSettings(); s.customMetadataEnabled = true; s.metadataTitle = "Title"; s.metadataAuthor = "Eyad"; s.metadataCopyright = "Copyright"; s.metadataDescription = "Description"; s.metadataKeywords = "camera, horizon"
+        let metadata = CaptureMetadata.photo(s)
+        let tiff = try XCTUnwrap(metadata[kCGImagePropertyTIFFDictionary as String] as? [String:Any])
+        XCTAssertEqual(tiff[kCGImagePropertyTIFFArtist as String] as? String,"Eyad")
+        XCTAssertEqual(tiff[kCGImagePropertyTIFFSoftware as String] as? String,"TrueCamera")
+        let iptc = try XCTUnwrap(metadata[kCGImagePropertyIPTCDictionary as String] as? [String:Any])
+        XCTAssertEqual(iptc[kCGImagePropertyIPTCObjectName as String] as? String,"Title")
+        XCTAssertEqual((iptc[kCGImagePropertyIPTCKeywords as String] as? [String]) ?? [],["camera","horizon"])
+    }
+
+    func testSourceExifSurvivesCustomMetadataMerge() throws {
+        var settings = CameraSettings(); settings.customMetadataEnabled = true; settings.metadataAuthor = "New Author"
+        let originalExif: [String:Any] = [kCGImagePropertyExifExposureTime as String: 0.01]
+        let metadata = CaptureMetadata.photo(settings,base:[kCGImagePropertyExifDictionary as String:originalExif])
+        let exif = try XCTUnwrap(metadata[kCGImagePropertyExifDictionary as String] as? [String:Any])
+        XCTAssertEqual(exif[kCGImagePropertyExifExposureTime as String] as? Double,0.01)
+    }
+    func testISO6709AndGPSMetadataFormatting() {
+        let location = CLLocation(coordinate:CLLocationCoordinate2D(latitude:30.2672,longitude:-97.7431),altitude:155,
+            horizontalAccuracy:6,verticalAccuracy:8,timestamp:Date())
+        let iso = CaptureLocation.iso6709(location)
+        XCTAssertTrue(iso.hasPrefix("+30.267200-97.743100+155.0"))
+        let gps = CaptureLocation.gpsDictionary(location)
+        XCTAssertEqual(gps[kCGImagePropertyGPSLatitudeRef as String] as? String,"N")
+        XCTAssertEqual(gps[kCGImagePropertyGPSLongitudeRef as String] as? String,"W")
+    }
+    func testNativeMovieMetadataIncludesEditableFields() {
+        var settings = CameraSettings(); settings.customMetadataEnabled = true; settings.metadataTitle = "Test Title"; settings.metadataAuthor = "Test Author"; settings.metadataKeywords = "one,two"
+        let metadata = NativeMovieController.movieMetadata(settings)
+        XCTAssertTrue(metadata.contains { $0.identifier == .quickTimeMetadataTitle && $0.stringValue == "Test Title" })
+        XCTAssertTrue(metadata.contains { $0.identifier == .quickTimeMetadataAuthor && $0.stringValue == "Test Author" })
+        XCTAssertTrue(metadata.contains { $0.identifier == .quickTimeMetadataSoftware })
+    }
+
+    func testOldSettingsJSONMigratesWithoutLosingExistingValues() throws {
+        let old = #"{"mode":"VIDEO","zoom":2.5,"grid":false,"horizonLock":false}"#.data(using:.utf8)!
+        let migrated = try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
+        XCTAssertEqual(migrated.mode,.video); XCTAssertEqual(migrated.zoom,2.5); XCTAssertFalse(migrated.grid); XCTAssertFalse(migrated.horizonLock)
+        XCTAssertTrue(migrated.scanQRCodes); XCTAssertTrue(migrated.showDetectedText); XCTAssertTrue(migrated.lensCleaningHints)
+    }
+    func testNewDetectionAndSwitchingSettingsRoundTrip() throws {
+        var settings = CameraSettings(); settings.lockCameraSwitching = true; settings.centerStage = true; settings.smartFraming = true
+        settings.photoResolutionMP = 24; settings.scanQRCodes = false; settings.showDetectedText = false; settings.lensCleaningHints = false
+        let decoded = try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(settings))
+        XCTAssertEqual(decoded,settings)
+    }
+
+    func testGeometricActionHonorsNativePrecisionRestrictions() {
+        var action = CameraSettings(); action.mode = .video; let before = action
+        action.actionStabilization = true; action.zoomLock = true; action.actionStrength = 0.9
+        action.normalize(changedFrom: before)
+        XCTAssertTrue(action.actionStabilization); XCTAssertTrue(action.zoomLock)
+        XCTAssertEqual(action.actionStrength, 0.82, accuracy: 0.001)
+        XCTAssertLessThan(action.captureReserve, 0.70)
+        var native = action; native.colorProfile = .hdrHLG; native.codec = .proRes422; native.audioMode = .stereo
+        native.normalize(changedFrom: action)
+        XCTAssertFalse(native.actionStabilization); XCTAssertFalse(native.horizonLock); XCTAssertFalse(native.zoomLock)
+        XCTAssertEqual(native.codec, .proRes422); XCTAssertEqual(native.colorProfile, .hdrHLG)
+        XCTAssertEqual(native.audioMode, .stereo)
+    }
+
+    func testMaximumPairKeepsOriginalSensorAspectAndNoDeferredProxy() {
+        var s = CameraSettings(); let old = s
+        s.photoFraming = .square; s.photoResolutionMP = 12; s.photoQuality = .speed
+        s.autoDeferredPhotoDelivery = true; s.computationalPhoto = .autoHDR
+        s.normalize(changedFrom: old)
+        XCTAssertEqual(s.photoFraming, .classic); XCTAssertEqual(s.photoResolutionMP, 0)
+        XCTAssertEqual(s.photoQuality, .quality); XCTAssertFalse(s.autoDeferredPhotoDelivery)
+        XCTAssertFalse(s.usesBracketedPhotoPipeline); XCTAssertFalse(s.isProcessedPhoto)
+    }
+
+    func testApproximationSettingsRoundTripThroughCodableAndMigrationDefaults() throws {
+        var s=CameraSettings(); s.photographicStyle = .richContrast; s.styleIntensity=0.7; s.portraitLighting = .contour
+        s.actionStabilization = true; s.actionNativeAssist = false; s.actionStrength=0.9; s.dualCaptureLayout = .splitVertical
+        let decoded=try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(s)); XCTAssertEqual(decoded,s)
+        let old = #"{"mode":"PHOTO","grid":false}"#.data(using:.utf8)!
+        let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(old))
+        XCTAssertEqual(migrated.photographicStyle,.standard); XCTAssertEqual(migrated.computationalPhoto,.off); XCTAssertEqual(migrated.portraitLighting,.natural)
+    }
+
+    func testMotionHistoryInterpolatesThreeAxisGyroAndYawAcrossWrap() throws {
+        var history=MotionHistory()
+        history.append(MotionReading(time:1,gx:0,gy:-1,gz:0,rateZ:1,rateX:2,rateY:3,yaw:Double.pi-0.1))
+        history.append(MotionReading(time:1.01,gx:0,gy:-1,gz:0,rateZ:3,rateX:4,rateY:5,yaw:-Double.pi+0.1))
+        let m=try XCTUnwrap(history.sample(at:1.005))
+        XCTAssertEqual(m.rateX,3,accuracy:0.001); XCTAssertEqual(m.rateY,4,accuracy:0.001); XCTAssertEqual(m.rateZ,2,accuracy:0.001)
+        XCTAssertLessThan(abs(AngleMath.wrap(m.yaw)-Double.pi),0.11)
+    }
+
+    func testManualFocusAFAELockAndExposureSettingsRoundTrip() throws {
+        var settings=CameraSettings()
+        settings.manualFocus=true; settings.lensPosition=0.23; settings.aeafLock=true
+        settings.focusRange = .near; settings.smoothAutofocus=false; settings.faceDrivenAutofocus=false
+        settings.exposureEV=1.2; settings.manualExposure=true; settings.iso=320; settings.shutterAngleMode=true; settings.shutterAngle=172.8
+        settings.manualWhiteBalance=true; settings.whiteBalanceKelvin=4300; settings.whiteBalanceTint=12
+        let decoded=try JSONDecoder().decode(CameraSettings.self,from:JSONEncoder().encode(settings))
+        XCTAssertEqual(decoded,settings)
+        XCTAssertTrue(decoded.manualFocus); XCTAssertEqual(decoded.lensPosition,0.23,accuracy:0.001)
+        XCTAssertTrue(decoded.aeafLock); XCTAssertEqual(decoded.focusRange,.near); XCTAssertEqual(decoded.exposureEV,1.2,accuracy:0.001)
+        XCTAssertTrue(decoded.shutterAngleMode); XCTAssertEqual(decoded.shutterAngle,172.8,accuracy:0.001)
+        XCTAssertTrue(decoded.manualWhiteBalance); XCTAssertEqual(decoded.whiteBalanceKelvin,4300,accuracy:0.001); XCTAssertEqual(decoded.whiteBalanceTint,12,accuracy:0.001)
+    }
+
+    func testActionTickDefaultsMigrationAndFixedProfilePolicy() throws {
+        let defaults=CameraSettings()
+        XCTAssertFalse(defaults.actionStabilization); XCTAssertTrue(defaults.actionNativeAssist); XCTAssertEqual(defaults.actionStrength,0.82,accuracy:0.001)
+        XCTAssertFalse(CameraMode.visibleCases.contains(.action))
+
+        let legacyJSON = #"{"mode":"ACTION","actionStrength":0.6,"horizonLock":true}"#.data(using:.utf8)!
+        let migrated=try XCTUnwrap(CameraModel.decodeSettingsMigrating(legacyJSON))
+        XCTAssertEqual(migrated.mode,.video); XCTAssertTrue(migrated.actionStabilization); XCTAssertTrue(migrated.horizonLock)
+        XCTAssertEqual(migrated.actionStrength,0.82,accuracy:0.001)
+
+        var action=CameraSettings(); action.mode = .video; action.horizonLock=false; let before=action; action.actionStabilization=true; action.normalize(changedFrom:before)
+        var adjusted=action; let actionBefore=adjusted; adjusted.actionStrength=0.95; adjusted.normalize(changedFrom:actionBefore)
+        XCTAssertEqual(adjusted.actionStrength,0.82,accuracy:0.001)
+        XCTAssertFalse(adjusted.requiresCaptureReconfiguration(comparedTo:action))
+        var nativeToggle=adjusted; nativeToggle.actionNativeAssist.toggle()
+        XCTAssertFalse(nativeToggle.requiresCaptureReconfiguration(comparedTo:adjusted))
+    }
+
+    func testDolbyVisionProfileForcesHEVCNativePipeline() {
+        var settings=CameraSettings(); let old=settings; settings.mode = .video; settings.colorProfile = .dolbyVision84; settings.codec = .compatible
+        settings.normalize(changedFrom:old)
+        XCTAssertEqual(settings.codec,.efficient); XCTAssertTrue(settings.usesNativeMoviePipeline); XCTAssertTrue(settings.colorProfile.isHDR)
+    }
+
+    func testNewUXDefaultsAreSafeAndUncluttered() {
+        let s=CameraSettings()
+        XCTAssertEqual(s.zoom,1,accuracy:0.0001)
+        XCTAssertFalse(s.grid); XCTAssertTrue(s.showOverview); XCTAssertFalse(s.showStats)
+        XCTAssertTrue(s.showDetectedText); XCTAssertTrue(s.smartArtifactGuard)
+        XCTAssertFalse(s.customMetadataEnabled); XCTAssertTrue(s.includeLocationMetadata)
+        XCTAssertEqual(s.stabilization,.standard)
+    }
+
+    func testExpandedOutputAspectRatiosAreRealCrops() {
+        XCTAssertEqual(Framing.classic.ratio,3.0/4.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.classicLandscape.ratio,4.0/3.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.portrait35.ratio,2.0/3.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.landscape35.ratio,3.0/2.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.portraitSocial.ratio,4.0/5.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.landscapeSocial.ratio,5.0/4.0,accuracy:0.0001)
+        XCTAssertEqual(Framing.academy.ratio,1.85,accuracy:0.0001)
+        XCTAssertEqual(Framing.cinema.ratio,2.39,accuracy:0.0001)
+    }
+
+    func testCustomMetadataOffPreservesSourceWithoutInjectingHorizonFields() throws {
+        var settings=CameraSettings(); settings.metadataTitle="Should not be injected"; settings.metadataAuthor="Nope"
+        let base:[String:Any]=[kCGImagePropertyExifDictionary as String:[kCGImagePropertyExifExposureTime as String:0.02]]
+        let metadata=CaptureMetadata.photo(settings,base:base)
+        XCTAssertNil((metadata[kCGImagePropertyIPTCDictionary as String] as? [String:Any])?[kCGImagePropertyIPTCObjectName as String])
+        XCTAssertNil((metadata[kCGImagePropertyTIFFDictionary as String] as? [String:Any])?[kCGImagePropertyTIFFSoftware as String])
+        let exif=try XCTUnwrap(metadata[kCGImagePropertyExifDictionary as String] as? [String:Any])
+        XCTAssertEqual(exif[kCGImagePropertyExifExposureTime as String] as? Double,0.02)
+        let movie = NativeMovieController.movieMetadata(settings)
+        XCTAssertTrue(movie.contains { $0.identifier == .quickTimeMetadataCreationDate })
+        XCTAssertTrue(movie.contains { $0.identifier == .quickTimeMetadataSoftware })
+        XCTAssertFalse(movie.contains { $0.identifier == .quickTimeMetadataTitle || $0.identifier == .quickTimeMetadataAuthor })
+    }
+
+    func testRealtimeHighFrameRateIsNotSlowMotion() {
+        var s=CameraSettings(); let old=s; s.mode = .video; s.fps=120; s.normalize(changedFrom:old)
+        XCTAssertTrue(s.usesNativeMoviePipeline)
+        if case .realtime = s.cadence {} else { XCTFail("120 fps VIDEO must remain real-time, not be retimed as Slo-mo") }
+        XCTAssertTrue(FrameRateCatalog.all.contains(120)); XCTAssertTrue(FrameRateCatalog.all.contains(240))
+        XCTAssertEqual(FrameRateCatalog.label(23.976),"23.98"); XCTAssertEqual(FrameRateCatalog.label(59.94),"59.94")
+    }
+
+    func testProResRAWNormalizesToRawFrameSizeAndNativePipeline() {
+        var s=CameraSettings(); let old=s; s.mode = .video; s.codec = .proResRAW; s.colorProfile = .appleLog2; s.resolution = .ultraHD
+        s.normalize(changedFrom:old)
+        XCTAssertTrue(s.codec.isProResRAW); XCTAssertEqual(s.resolution,.openGate); XCTAssertEqual(s.colorProfile,.sdr)
+        XCTAssertTrue(s.usesNativeMoviePipeline); XCTAssertFalse(s.horizonLock); XCTAssertFalse(s.zoomLock)
+    }
+
+    func testActionDoesNotSilentlyRewriteIncompatibleSelections() {
+        var s=CameraSettings(); let old=s
+        s.mode = .video; s.resolution = .ultraHD; s.fps=120; s.actionStabilization=true; s.codec = .efficient; s.colorProfile = .hdrHLG
+        s.normalize(changedFrom:old)
+        XCTAssertEqual(s.fps,120,accuracy:0.001); XCTAssertEqual(s.resolution,.ultraHD)
+        XCTAssertEqual(s.colorProfile,.hdrHLG); XCTAssertFalse(s.actionStabilization)
+
+        var compatible=CameraSettings(); compatible.mode = .video; compatible.horizonLock=false; let before=compatible
+        compatible.resolution = .ultraHD; compatible.actionStabilization=true
+        compatible.normalize(changedFrom:before)
+        XCTAssertTrue(compatible.actionStabilization); XCTAssertEqual(compatible.resolution,.ultraHD)
+        XCTAssertEqual(compatible.effectiveOutputResolution,.action2_8K)
+    }
+
+    func testModeHelpAndExpandedFrameSizesAreComplete() {
+        for mode in CameraMode.visibleCases { XCTAssertFalse(mode.helpText.isEmpty) }
+        XCTAssertEqual(Resolution.action2_8K.exactSize,Size2(2816,1584))
+        XCTAssertEqual(Resolution.raw17x9.exactSize,Size2(4224,2240))
+        XCTAssertEqual(Resolution.openGate.exactSize,Size2(4224,3024))
+    }
+
+    func testLaunchAndPersistenceResetOnlyLiveZoomState() {
+        var saved=CameraSettings(); saved.zoom=7.5; saved.grid=true; saved.smartArtifactGuard=false; saved.mode = .photo; saved.timer=5; saved.torch=true; saved.aeafLock=true
+        let launched=CameraModel.preparedForLaunch(saved)
+        XCTAssertEqual(launched.zoom,1,accuracy:0.0001); XCTAssertTrue(launched.grid); XCTAssertFalse(launched.smartArtifactGuard); XCTAssertEqual(launched.mode,.photo); XCTAssertEqual(launched.timer,5)
+        XCTAssertFalse(launched.torch); XCTAssertFalse(launched.aeafLock)
+        let stored=CameraModel.preparedForPersistence(saved)
+        XCTAssertEqual(stored.zoom,1,accuracy:0.0001); XCTAssertTrue(stored.grid); XCTAssertEqual(stored.timer,5)
+    }
+
+}
