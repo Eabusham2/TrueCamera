@@ -503,6 +503,10 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 format = device.activeFormat
             }
             try device.lockForConfiguration()
+            if #available(iOS 26.0, *), input.isLockedVideoFrameDurationSupported,
+               input.activeLockedVideoFrameDuration.isValid {
+                input.activeLockedVideoFrameDuration = .invalid
+            }
             if !settings.mode.isPhotoMode { device.activeFormat = format }
             device.automaticallyAdjustsVideoHDREnabled = false
             if device.isVideoHDREnabled { device.isVideoHDREnabled = false }
@@ -510,6 +514,9 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if !settings.mode.isPhotoMode {
                 device.activeVideoMinFrameDuration=frameDuration
                 device.activeVideoMaxFrameDuration=frameDuration
+            } else {
+                device.activeVideoMinFrameDuration = .invalid
+                device.activeVideoMaxFrameDuration = .invalid
             }
             let nativeZoom = settings.mode.isPhotoMode || settings.usesNativeMoviePipeline
             device.videoZoomFactor = min(max(CGFloat(nativeZoom ? settings.zoom : 1), device.minAvailableVideoZoomFactor), device.maxAvailableVideoZoomFactor)
