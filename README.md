@@ -38,7 +38,7 @@ The app preserves the DNG, processed still and Live movie resources directly fro
 | Choice | What it contains | Important limit |
 |---|---|---|
 | Apple ProRAW | Apple's computational, demosaiced/linear RAW pipeline, saved as lossless DNG | It is not an untouched Bayer mosaic, nor a promise of literally uncompressed storage |
-| Bayer RAW | Minimally processed sensor mosaic | Often lower resolution than ProRAW on a quad sensor |
+| Bayer RAW | Minimally processed sensor mosaic | Often lower resolution than ProRAW; requires native 1× device zoom and 1× photo-connection crop on the chosen camera |
 | HEIF / JPEG | Apple's processed standard photo, requested at the highest codec quality | The Apple ISP still processes the image; TrueCamera adds no look |
 | Live Photo | A native processed still plus the matched movie | Maximum available dimensions depend on the active camera/combination |
 | Dual ProRAW + Live | Two successive native capture requests | ProRAW and Live cannot share one request |
@@ -102,6 +102,7 @@ Histogram, zebras and peaking are **preview-only aids**. They describe the proce
 - AI inference is local. The app has no account, API-key field, analytics endpoint or image-upload service.
 - Original files are saved in `Documents/Captures` before Photos export. Denial of Photos access retains the local originals and sharing still works.
 - Native camera metadata and Live pairing metadata are preserved. GPS is added only with permission and a recent location fix. PhotoKit creation time/location are populated from the capture.
+- RAW-master exports use the DNG as the primary Photos resource and retain the processed companion. Combined Bayer + Live exports preserve the native Live still/movie pairing. Duplicate exports and deletion during an active export are guarded.
 - Location is enabled by default and can be turned off. Optional custom author/title metadata is off by default.
 - Routine successful saves are silent. Failed export or capture is reported.
 - Files unindexed after an interruption can be recovered into the local library on the next launch.

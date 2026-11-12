@@ -11,6 +11,8 @@ CI can prove compilation, deterministic policy behavior, real simulator Vision e
 5. Test single Bayer RAW + Live if supported. Test ProRAW + Live without Dual and verify an incompatibility reason. Test exact exposure at several ISO/shutter combinations; compare actual EXIF against the selected values.
 6. With location allowed and a recent fix, confirm GPS and Photos asset location/time. Disable location and verify subsequent captures omit app-added location. Verify author fields remain absent by default.
 7. Interrupt or background during each step; simulate storage/export failure where possible. Completed originals must remain recoverable; incomplete pairs must be reported rather than called complete. Share the complete original resource set and inspect each file.
+8. Request Bayer RAW while zoomed or during a zoom ramp. It must reject safely with a reason before calling native capture; return the chosen camera to native 1× and retry. This restriction must not be imposed on ProRAW. Change exposure/format immediately before starting Burst and verify the first capture uses the newly requested settings.
+9. Repeatedly request Photos export from an old detail view and during an existing export. It must not create duplicates. Attempt local deletion while export is pending; source files must remain until export completes. Confirm RAW masters export with DNG as the primary resource and combined Bayer + Live assets retain their Live pairing.
 
 ## AI and manual control
 
@@ -25,7 +27,7 @@ CI can prove compilation, deterministic policy behavior, real simulator Vision e
 
 1. Sweep Horizon Lock through portrait/landscape/full rotations; check black corners, constant crop, leveling and motion calibration. Test near vertical singularities and interrupted motion samples.
 2. At zoom, pan to both limits, reverse direction and verify floating crop travel resumes immediately. Confirm Action can coexist with Zoom Lock and does not add its heavy output-only processing to preview.
-3. Inspect recorded video to confirm Action/Smart changed output geometry. Check native low-latency/standard modes on supported formats. Do not claim Apple Action Mode equivalence.
+3. Inspect recorded video to confirm Action/Smart changed output geometry. Check native low-latency/standard modes on supported formats. With Action enabled, turn Native Assist off and confirm native stabilization really becomes off and the viewfinder control agrees. Horizon/Zoom Lock must retain priority over native stabilization. Do not claim Apple Action Mode equivalence.
 4. Exercise each supported resolution/rate/codec/color profile, including real-time 120/240 versus slow-motion and time-lapse. Verify recorded dimensions, frame cadence, audio synchronization, color tags and actual codec externally.
 5. Verify native ProRes/HDR/Log paths reject incompatible custom geometry; validate Apple-required external storage for ProRes RAW. Return from native video to Photo and confirm Live Photo becomes usable again.
 6. Confirm histogram/zebra/peaking overlays never appear in any stored photo or movie. Compare clipping guides against processed preview, without interpreting them as a RAW-headroom measurement.

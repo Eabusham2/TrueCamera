@@ -69,11 +69,20 @@ struct CameraSettingsView: View {
                     .disabled(!model.capabilities.livePhoto || (model.settings.raw && model.settings.preferProRAW))
                 Picker("Maximum resolution", selection: model.binding(\.photoResolutionMP)) {
                     Text("Largest available").tag(0)
-                    ForEach(model.capabilities.supportedPhotoResolutionsMP, id: \.self) { mp in Text("\(mp) MP").tag(mp) }
+                    ForEach(model.capabilities.supportedPhotoResolutionsMP, id: \.self) { mp in
+                        let reason = model.photoResolutionUnavailableReason(mp)
+                        Text(reason.map { "\(mp) MP · \($0)" } ?? "\(mp) MP").tag(mp).disabled(reason != nil)
+                    }
                 }
-                Picker("Photo quality", selection: model.binding(\.photoQuality)) {
+                Picker("Processing priority", selection: Binding(get: {
+                    PhotoQualityChoice(rawValue: model.photoCapturePriority.rawValue) ?? .quality
+                }, set: { value in model.change { $0.photoQuality = value } })) {
                     ForEach(PhotoQualityChoice.allCases) { Text($0.rawValue).tag($0) }
-                }.disabled(model.settings.exactExposure)
+                }.disabled(model.settings.exactExposure || (model.settings.raw && !model.settings.preferProRAW))
+                if model.settings.photoResolutionMP > 0,
+                   let reason = model.photoResolutionUnavailableReason(model.settings.photoResolutionMP) {
+                    Text("\(reason). Select Largest available or a compatible resolution.").font(.caption).foregroundStyle(.orange)
+                }
             }
             Picker("Standard photo", selection: model.binding(\.codec)) {
                 Text("HEIF · maximum quality").tag(CodecChoice.efficient)
@@ -265,12 +274,13 @@ struct CameraSettingsView: View {
             Toggle("Floating Zoom Lock", isOn: model.binding(\.zoomLock)).disabled(!geometryAvailable)
             Toggle("Action", isOn: model.binding(\.actionStabilization)).disabled(model.settings.mode != .video || !geometryAvailable || model.settings.fps > 60)
             Toggle("Smart motion correction", isOn: model.binding(\.smartArtifactGuard)).disabled(!geometryAvailable)
-            Toggle("Native assist for Action", isOn: model.binding(\.actionNativeAssist)).disabled(!model.settings.actionStabilization || model.settings.horizonLock || model.settings.zoomLock)
+            Toggle("Native assist for Action", isOn: model.binding(\.actionNativeAssist))
+                .disabled(!model.canConfigure || !model.settings.actionStabilization || model.settings.horizonLock || model.settings.zoomLock || !model.capabilities.supportedStabilizationModes.contains(where: { $0 != .off && $0 != .auto }))
             Picker("Native stabilization", selection: model.binding(\.stabilization)) {
                 ForEach(model.capabilities.supportedStabilizationModes.filter { $0 != .auto }) { Text($0.rawValue).tag($0) }
-            }.disabled(!model.settings.mode.isMovie || model.settings.horizonLock || model.settings.zoomLock)
+            }.disabled(!model.canConfigure || !model.settings.mode.isMovie || model.settings.actionStabilization || model.settings.horizonLock || model.settings.zoomLock)
             Button("Reset framing") { model.resetFraming() }
-            Text("Reused from TrueCamera: gravity-based Horizon Lock, edge-limited floating Zoom Lock, and output-only Action/Smart correction. Crop/rotation can reduce field of view and effective resolution. RAW/Live originals stay untouched.")
+            Text("Horizon Lock uses gravity to keep video level. Floating Zoom Lock holds framing within the available image, while Action and Smart correction stabilize recorded video. Stabilization can reduce field of view and effective resolution. Photo originals keep their native framing.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

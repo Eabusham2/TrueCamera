@@ -105,26 +105,34 @@ final class NativeMovieController: NSObject, AVCaptureFileOutputRecordingDelegat
     }
 
     /// Public AVFoundation does not expose Apple's stock Camera Action Mode.
-    /// For the Action tick, request the strongest stabilization mode this active
-    /// format actually reports, then layer TrueCamera's gyro/crop correction on top.
+    /// Prefer low latency for Action, then the strongest mode this active format
+    /// reports, and layer TrueCamera's gyro/crop correction on top.
     static func preferredActionNativeStabilization(for format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
-        if #available(iOS 26.0, *), format.isVideoStabilizationModeSupported(.lowLatency) { return .lowLatency }
-        if #available(iOS 18.0, *), format.isVideoStabilizationModeSupported(.cinematicExtendedEnhanced) { return .cinematicExtendedEnhanced }
+        preferredActionNativeStabilization(supports: { format.isVideoStabilizationModeSupported($0) })
+    }
+
+    private static func preferredActionNativeStabilization(supports: (AVCaptureVideoStabilizationMode) -> Bool) -> AVCaptureVideoStabilizationMode {
+        if #available(iOS 26.0, *), supports(.lowLatency) { return .lowLatency }
+        if #available(iOS 18.0, *), supports(.cinematicExtendedEnhanced) { return .cinematicExtendedEnhanced }
         for mode: AVCaptureVideoStabilizationMode in [.cinematicExtended, .cinematic, .standard, .auto] {
-            if format.isVideoStabilizationModeSupported(mode) { return mode }
+            if supports(mode) { return mode }
         }
         return .off
     }
 
     static func preferredStabilization(_ settings: CameraSettings, format: AVCaptureDevice.Format) -> AVCaptureVideoStabilizationMode {
+        preferredStabilization(settings, supports: { format.isVideoStabilizationModeSupported($0) })
+    }
+
+    static func preferredStabilization(_ settings: CameraSettings, supports: (AVCaptureVideoStabilizationMode) -> Bool) -> AVCaptureVideoStabilizationMode {
         if settings.mode.isPhotoMode { return .off }
         // Sensor-derived geometric correction requires an unwarped sensor feed.
         if settings.horizonLock || settings.zoomLock { return .off }
-        if settings.actionStabilization && settings.actionNativeAssist {
-            return preferredActionNativeStabilization(for: format)
+        if settings.actionStabilization {
+            return settings.actionNativeAssist ? preferredActionNativeStabilization(supports: supports) : .off
         }
         let requested = settings.stabilization.avMode
-        return format.isVideoStabilizationModeSupported(requested) ? requested : .off
+        return supports(requested) ? requested : .off
     }
 
     static func applyLiveSettings(_ settings: CameraSettings, engine: CaptureEngine) {
