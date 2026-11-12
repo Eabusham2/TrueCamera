@@ -277,6 +277,24 @@ import Photos
         case .appleLog2: return capabilities.appleLog2 && settings.codec != .compatible
         }
     }
+    var photoCapturePriority: PhotoCapturePriority {
+        // Dual's resolution label describes its maximum-quality Live companion;
+        // a Bayer master separately uses its compatible native RAW dimensions.
+        if settings.dualPhotoCapture { return .quality }
+        if settings.exactExposure || (settings.raw && !settings.preferProRAW) { return .speed }
+        return PhotoCapturePriority(rawValue: settings.photoQuality.rawValue) ?? .quality
+    }
+    var maximumPhotoResolutionMP: Int? {
+        capabilities.supportedPhotoResolutionsMP.filter {
+            PhotoCapturePlanner.supportsResolution(megapixels: Double($0), priority: photoCapturePriority)
+        }.max()
+    }
+    func photoResolutionUnavailableReason(_ megapixels: Int) -> String? {
+        if settings.dualPhotoCapture { return "Dual uses maximum" }
+        guard capabilities.supportedPhotoResolutionsMP.contains(megapixels) else { return "Unavailable on this camera" }
+        return PhotoCapturePlanner.supportsResolution(megapixels: Double(megapixels), priority: photoCapturePriority)
+            ? nil : "Unavailable at \(photoCapturePriority.rawValue) priority"
+    }
     func resolutionAvailable(_ resolution: Resolution) -> Bool {
         if settings.codec.isProResRAW {
             guard resolution.isRAWFrameSize, capabilities.supportedResolutions.contains(resolution) else { return false }
@@ -399,6 +417,7 @@ import Photos
         guard settings.mode.isPhotoMode && settings.mode != .panorama && settings.mode != .spatialPhoto else { return }
         if burstLocked { burstLocked=false; burstTask?.cancel(); burstTask=nil; return }
         guard canConfigure else { return }
+        settingsTask?.cancel(); engine?.update(settings)
         burstLocked=true
         burstTask=Task { [weak self] in
             guard let self else { return }

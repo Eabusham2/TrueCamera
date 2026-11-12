@@ -197,10 +197,11 @@ struct CameraView: View {
                 }
             } else if !model.capabilities.supportedPhotoResolutionsMP.isEmpty {
                 Section("Photo Resolution") {
-                    Button("Maximum · \(model.capabilities.supportedPhotoResolutionsMP.max().map(String.init) ?? "?") MP") { model.change{$0.photoResolutionMP=0} }
+                    Button("Maximum · \(model.maximumPhotoResolutionMP.map(String.init) ?? "?") MP") { model.change{$0.photoResolutionMP=0} }
                     ForEach(model.capabilities.supportedPhotoResolutionsMP,id:\.self) { mp in
-                        Button(model.settings.dualPhotoCapture ? "\(mp) MP — dual uses maximum" : "\(mp) MP") { model.change{$0.photoResolutionMP=mp} }
-                            .disabled(model.settings.dualPhotoCapture)
+                        let reason = model.photoResolutionUnavailableReason(mp)
+                        Button(reason.map { "\(mp) MP — \($0)" } ?? "\(mp) MP") { model.change{$0.photoResolutionMP=mp} }
+                            .disabled(reason != nil)
                     }
                 }
             }
@@ -411,35 +412,39 @@ struct CameraView: View {
 
     private var nativeStabilizationControl: some View {
         let blocked=nativeStabilizationDisabledReason != nil
+        let action=model.settings.actionStabilization
+        let enabled = !blocked && (action ? model.settings.actionNativeAssist : model.settings.stabilization != .off)
         return HStack(spacing:0) {
             Button {
                 if let reason=nativeStabilizationDisabledReason { model.notice=reason; return }
                 model.notice=nil
                 model.change { settings in
-                    if settings.stabilization == .off { settings.stabilization = preferredNativeChoice }
+                    if action { settings.actionNativeAssist.toggle() }
+                    else if settings.stabilization == .off { settings.stabilization = preferredNativeChoice }
                     else { settings.stabilization = .off }
                 }
             } label: {
                 HStack(spacing:4) {
-                    Image(systemName:model.settings.stabilization == .off ? "square":"checkmark.square.fill")
+                    Image(systemName:enabled ? "checkmark.square.fill":"square")
                     VStack(alignment:.leading,spacing:0) {
-                        Text("Native").font(.system(size:10,weight:.medium))
-                        Text(model.settings.stabilization == .off ? "Off":model.settings.stabilization.rawValue)
+                        Text(action ? "Native assist":"Native").font(.system(size:10,weight:.medium))
+                        Text(blocked ? "Unavailable" : (action ? (enabled ? "On":"Off") : (enabled ? model.settings.stabilization.rawValue:"Off")))
                             .font(.system(size:7)).lineLimit(1)
                     }
                 }.padding(.leading,7).padding(.vertical,6)
             }
+            .disabled(!model.canConfigure)
             Menu {
                 Button("Off") { model.change{$0.stabilization = .off} }
                 ForEach(model.capabilities.supportedStabilizationModes.filter{$0 != .off && $0 != .auto}) { choice in
                     Button(choice.rawValue) { model.change{$0.stabilization = choice} }
                 }
             } label: { Image(systemName:"chevron.down").font(.system(size:8,weight:.bold)).frame(width:22,height:34) }
-            .disabled(blocked || !model.canConfigure)
+            .disabled(action || blocked || !model.canConfigure)
         }
         .frame(width:112)
-        .foregroundStyle(model.settings.stabilization != .off ? Color.yellow:Color.white.opacity(blocked ? 0.3:1))
-        .background(model.settings.stabilization != .off ? Color.yellow.opacity(0.10):Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:8))
+        .foregroundStyle(enabled ? Color.yellow:Color.white.opacity(blocked ? 0.3:1))
+        .background(enabled ? Color.yellow.opacity(0.10):Color.white.opacity(0.055),in:RoundedRectangle(cornerRadius:8))
     }
 
     private var shutterRow: some View {
@@ -624,7 +629,7 @@ struct CameraView: View {
     private var formatLabel: String {
         if model.settings.mode.isPhotoMode {
             let codec=model.settings.codec == .efficient ? "HEIF":"JPEG"
-            let maxMP=model.capabilities.supportedPhotoResolutionsMP.max()
+            let maxMP=model.maximumPhotoResolutionMP
             let mp=model.settings.photoResolutionMP == 0 ? (maxMP.map{"MAX \($0)MP"} ?? "MAX") : "\(model.settings.photoResolutionMP)MP"
             return "\(codec) \(mp)"
         }

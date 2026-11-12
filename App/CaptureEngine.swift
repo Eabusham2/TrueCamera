@@ -971,7 +971,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             let step = steps[index]
             let settings = try photoSettings(for: step, config: config, device: device, createLiveFile: true)
             let id = settings.uniqueID
-            let codec: AVVideoCodecType = (config.dualPhotoCapture || config.codec == .efficient) ? .hevc : .jpeg
+            let codec: AVVideoCodecType = config.codec == .efficient ? .hevc : .jpeg
             let delegate = PhotoCapture(id: id, settings: config, step: step, liveURL: settings.livePhotoMovieFileURL,
                 processedFileExtension: codec == .jpeg ? "jpg" : "heic", pairID: pairID) { [weak self] result in
                 guard let self else { return }
@@ -1012,7 +1012,18 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     private func photoSettings(for step: PhotoCaptureStep, config: CameraSettings,
                                device: AVCaptureDevice, createLiveFile: Bool) throws -> AVCapturePhotoSettings {
-        let codec: AVVideoCodecType = (config.dualPhotoCapture || config.codec == .efficient) ? .hevc : .jpeg
+        if step.rawKind == .bayer {
+            guard let connection = photoOutput.connection(with: .video) else {
+                throw CameraFailure.message("The photo output is not connected to the selected camera.")
+            }
+            // Validate actual hardware/connection values, including an unfinished
+            // zoom ramp, before AVFoundation can reject this request by exception.
+            try PhotoCapturePlanner.validateRAWZoom(rawKind: step.rawKind,
+                deviceZoomFactor: Double(device.videoZoomFactor),
+                connectionScaleAndCropFactor: Double(connection.videoScaleAndCropFactor),
+                isZoomRamping: device.isRampingVideoZoom)
+        }
+        let codec: AVVideoCodecType = config.codec == .efficient ? .hevc : .jpeg
         guard photoOutput.availablePhotoCodecTypes.contains(codec) else {
             throw CameraFailure.message("The requested \(codec == .hevc ? "HEIF" : "JPEG") format is unavailable. Select an available format.")
         }
@@ -1025,19 +1036,40 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard let raw else { throw CameraFailure.message("The requested RAW format is not enabled for this capture configuration.") }
             settings = AVCapturePhotoSettings(rawPixelFormatType: raw, processedFormat: processed)
         } else { settings = AVCapturePhotoSettings(format: processed) }
-        settings.photoQualityPrioritization = step.exactExposure ? .speed : (step.maximumQuality ? .quality : config.photoQuality.avValue)
+        let requestedPriority: PhotoCapturePriority
+        switch config.photoQuality {
+        case .speed: requestedPriority = .speed
+        case .balanced: requestedPriority = .balanced
+        case .quality: requestedPriority = .quality
+        }
+        let priority = PhotoCapturePlanner.effectivePriority(for: step, requested: requestedPriority)
+        switch priority {
+        case .speed: settings.photoQualityPrioritization = .speed
+        case .balanced: settings.photoQualityPrioritization = .balanced
+        case .quality: settings.photoQualityPrioritization = .quality
+        }
         let supported = device.activeFormat.supportedMaxPhotoDimensions.filter {
             Int64($0.width) * Int64($0.height) <= Int64(photoOutput.maxPhotoDimensions.width) * Int64(photoOutput.maxPhotoDimensions.height)
         }
-        let available = step.exactExposure ? supported.filter { Int64($0.width) * Int64($0.height) <= 13_000_000 } : supported
-        guard !available.isEmpty else { throw CameraFailure.message("No photo dimensions support this exposure policy on the selected lens.") }
+        func megapixels(_ dimensions: CMVideoDimensions) -> Double {
+            Double(dimensions.width) * Double(dimensions.height) / 1_000_000
+        }
+        let available = supported.filter {
+            PhotoCapturePlanner.supportsResolution(megapixels: megapixels($0), priority: priority)
+        }
         if !step.maximumResolution && config.photoResolutionMP > 0 {
-            guard let dimensions = available.first(where: { Int((Double($0.width) * Double($0.height) / 1_000_000).rounded()) == config.photoResolutionMP }) else {
-                throw CameraFailure.message("This photo resolution is unavailable with the selected exposure policy. Exact exposure requires a speed-compatible resolution.")
+            guard let dimensions = supported.first(where: { Int(megapixels($0).rounded()) == config.photoResolutionMP }) else {
+                throw CameraFailure.message("\(config.photoResolutionMP) MP is unavailable on the selected lens and format.")
+            }
+            guard PhotoCapturePlanner.supportsResolution(megapixels: megapixels(dimensions), priority: priority) else {
+                throw CameraFailure.message("\(config.photoResolutionMP) MP is incompatible with \(priority.rawValue) priority. Speed supports the 12 MP family; 18/24 MP require Quality; 48 MP requires Balanced or Quality. Choose a compatible resolution or priority.")
             }
             settings.maxPhotoDimensions = dimensions
         } else {
-            settings.maxPhotoDimensions = available.max(by: { Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height) })!
+            guard let dimensions = available.max(by: { Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height) }) else {
+                throw CameraFailure.message("No photo dimensions support \(priority.rawValue) priority on the selected lens. Choose Quality or another lens.")
+            }
+            settings.maxPhotoDimensions = dimensions
         }
         settings.metadata = CaptureMetadata.photo(config)
         let hasRAW = step.rawKind != .none
