@@ -1,4 +1,4 @@
-name: Build and release unsigned iOS IPA
+name: Xcode 26 compatibility preflight
 on:
   push:
     branches: [main]
@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: xcode-27
+    runs-on: macos-26
     timeout-minutes: 30
     permissions:
       contents: write

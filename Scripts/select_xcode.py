@@ -19,7 +19,7 @@ for app in Path('/Applications').glob('Xcode*.app'):
 if not candidates:
     raise SystemExit('No stable Xcode installation was found; refusing to silently select a beta toolchain.')
 version, developer = max(candidates)
-if version[0] < 27:
-    raise SystemExit('This release requires Xcode 27+ so hardware aperture APIs are compiled.')
+if version[0] < 26:
+    raise SystemExit('This compatibility preflight requires Xcode 26+.')
 subprocess.run(['sudo', 'xcode-select', '--switch', developer], check=True)
 print('Selected stable Xcode', '.'.join(map(str, version)), developer)
