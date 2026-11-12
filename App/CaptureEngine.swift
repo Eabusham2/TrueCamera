@@ -146,6 +146,15 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             horizontalFOVDegrees: Double(device.activeFormat.videoFieldOfView))
     }
 
+    /// Session-queue only. QR detection can change while the camera is running;
+    /// updating the UI flag alone cannot restart an output configured with no types.
+    private func configureQRCodeDetection(_ settings: CameraSettings) {
+        guard session.outputs.contains(where: { $0 === metadataOutput }) else { return }
+        let types: [AVMetadataObject.ObjectType] = settings.scanQRCodes &&
+            metadataOutput.availableMetadataObjectTypes.contains(.qr) ? [.qr] : []
+        if metadataOutput.metadataObjectTypes != types { metadataOutput.metadataObjectTypes = types }
+    }
+
     /// Keep photo-output ownership here so live UI settings cannot undo the RAW/Live
     /// contract or lower the output's quality ceiling before the second exposure.
     func configurePhotoFeatures(_ settings: CameraSettings) {
@@ -234,7 +243,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     // Hold manually owned exposure values while AI changes the iris.
                     var shutter = duration, gain = iso
                     if configuration.manualExposure {
-                        let requested = configuration.shutterAngleMode ? (configuration.shutterAngle / 360) / configuration.captureFPS : 1 / configuration.shutterDenominator
+                        let requested = configuration.manualExposureDuration
                         guard let bounded = PhotoCapturePlanner.boundedShutter(requested,
                             minimum: device.activeFormat.minExposureDuration.seconds,
                             maximum: device.activeFormat.maxExposureDuration.seconds,
@@ -355,6 +364,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                     for connection in [videoOutput.connection(with:.video),photoOutput.connection(with:.video)].compactMap({$0}) where connection.isVideoStabilizationSupported {
                         connection.preferredVideoStabilizationMode = NativeMovieController.preferredStabilization(settings,format:device.activeFormat)
                     }
+                    if settings.scanQRCodes != old.scanQRCodes { configureQRCodeDetection(settings) }
                     configuration = settings
                     frameQueue.sync { [self] in configurePreview(settings, device: device) }
                     if #available(iOS 18.0, *) {
@@ -539,9 +549,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 }
             }
             configurePhotoFeatures(settings)
-            if session.outputs.contains(where: { $0 === metadataOutput }) {
-                metadataOutput.metadataObjectTypes = settings.scanQRCodes && metadataOutput.availableMetadataObjectTypes.contains(.qr) ? [.qr] : []
-            }
+            configureQRCodeDetection(settings)
             session.commitConfiguration()
         } catch { session.commitConfiguration(); throw error }
         try applyControls(settings, device: device)
@@ -693,7 +701,7 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             if abs(device.videoZoomFactor - zoom) > 0.001 { device.videoZoomFactor = zoom }
         }
         if settings.manualExposure && device.isExposureModeSupported(.custom) {
-            let requested = settings.shutterAngleMode ? (settings.shutterAngle / 360.0) / settings.captureFPS : 1 / settings.shutterDenominator
+            let requested = settings.manualExposureDuration
             guard let bounded = PhotoCapturePlanner.boundedShutter(requested,
                 minimum: device.activeFormat.minExposureDuration.seconds,
                 maximum: device.activeFormat.maxExposureDuration.seconds,
@@ -909,15 +917,21 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             do {
                 try MediaFiles.requireSpace()
                 let image = movie == nil ? frame.image : frame.recordingImage
-                var stillSettings=processor.settings
-                stillSettings.customMetadataEnabled=false
-                stillSettings.includeLocationMetadata=false
-                guard let encoded=CaptureMetadata.encodeProcessed(image,renderer:renderer,efficient:true,settings:stillSettings) else {
+                let stillSettings = processor.settings
+                guard let captureDate = CaptureMetadata.frameCaptureDate(hostTime: frame.hostTime,
+                    hostNow: CMClockGetTime(CMClockGetHostTimeClock()).seconds, wallNow: Date()) else {
+                    throw CameraFailure.message("A fresh video frame is not available yet. Wait for the preview to resume before taking a video still.")
+                }
+                guard let encoded=CaptureMetadata.encodeProcessed(image,renderer:renderer,
+                    efficient:stillSettings.codec != .compatible,settings:stillSettings,
+                    captureDate:captureDate,maximumQuality:true) else {
                     throw CameraFailure.message("Could not encode the video still.")
                 }
                 let url=try MediaFiles.newURL(extension:encoded.1)
                 try encoded.0.write(to:url,options:.atomic)
-                deliver(.success(MediaDraft(url:url,isVideo:false,summary:"Still photo captured during video · \(Int(image.extent.width))×\(Int(image.extent.height))")))
+                deliver(.success(MediaDraft(url:url,isVideo:false,
+                    summary:"Video-resolution frame · \(Int(image.extent.width))×\(Int(image.extent.height)) · \(encoded.1 == "jpg" ? "JPEG" : "HEIF")",
+                    created:captureDate)))
             } catch { deliver(.failure(error)) }
         }
     }

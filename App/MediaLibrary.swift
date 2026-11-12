@@ -91,19 +91,53 @@ enum MediaFiles {
         self.directory = directory
         self.requestPhotosAuthorization = requestPhotosAuthorization
         self.exportPhotoResources = exportPhotoResources ?? Self.writePhotosResources
+        let fileManager = FileManager.default
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if FileManager.default.fileExists(atPath: manifest.path) {
-                items = try JSONDecoder().decode([MediaItem].self, from: Data(contentsOf: manifest))
-                items = items.filter { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0.filename).path) }
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            message = "Local library: \(error.localizedDescription)"
+            return
+        }
+        var repairIndex = false
+        var mayReplaceIndex = true
+        if fileManager.fileExists(atPath: manifest.path) {
+            do {
+                let recorded = try JSONDecoder().decode([MediaItem].self, from: Data(contentsOf: manifest))
+                items = recorded.filter { fileManager.fileExists(atPath: directory.appendingPathComponent($0.filename).path) }
+                repairIndex = items.count != recorded.count
+            } catch is DecodingError {
+                // Keep the damaged index for recovery of any surviving metadata.
+                // Never make decoding this optional index a prerequisite for
+                // showing the original captures that are still on disk.
+                let backup = directory.appendingPathComponent("library-corrupt-\(UUID().uuidString).json")
+                do {
+                    try fileManager.copyItem(at: manifest, to: backup)
+                    repairIndex = true
+                    message = "The damaged library index was preserved. Local captures were recovered from their original files."
+                } catch {
+                    mayReplaceIndex = false
+                    message = "The library index is damaged and could not be backed up: \(error.localizedDescription). The index was not overwritten."
+                }
+            } catch {
+                // A read failure (for example, protected storage) does not prove
+                // corruption. Leave that index untouched and still scan files.
+                mayReplaceIndex = false
+                message = "The library index could not be read: \(error.localizedDescription). Local originals are still available."
             }
+        }
+        do {
             // Recover any capture whose app was interrupted before the manifest write.
             let known = Set(items.flatMap { [$0.filename, $0.liveFilename, $0.rawFilename].compactMap { $0 } })
-            let disk = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            let keys: Set<URLResourceKey> = [.isRegularFileKey, .creationDateKey, .contentModificationDateKey]
+            let disk = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))
             for url in disk where !known.contains(url.lastPathComponent) && ["mov","heic","jpg","dng"].contains(url.pathExtension.lowercased()) {
-                items.append(MediaItem(filename: url.lastPathComponent, isVideo: url.pathExtension == "mov", summary: "Recovered local capture"))
+                guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true else { continue }
+                items.append(MediaItem(created: values.creationDate ?? values.contentModificationDate ?? Date(),
+                    filename: url.lastPathComponent, isVideo: url.pathExtension.lowercased() == "mov", summary: "Recovered local capture"))
+                repairIndex = true
             }
             items.sort { $0.created > $1.created }
+            if repairIndex && mayReplaceIndex { persist() }
         } catch { message = "Local library: \(error.localizedDescription)" }
     }
     func add(_ draft: MediaDraft, saveToPhotos: Bool) async {

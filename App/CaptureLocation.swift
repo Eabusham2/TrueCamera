@@ -2,27 +2,47 @@ import Foundation
 import CoreLocation
 import ImageIO
 
+/// The system manager is replaceable in tests so permission changes and a long
+/// camera session can be exercised without displaying a location prompt.
+protocol CaptureLocationManaging: AnyObject {
+    var authorizationStatus: CLAuthorizationStatus { get }
+    var delegate: CLLocationManagerDelegate? { get set }
+    var desiredAccuracy: CLLocationAccuracy { get set }
+    func requestWhenInUseAuthorization()
+    func startUpdatingLocation()
+    func stopUpdatingLocation()
+}
+extension CLLocationManager: CaptureLocationManaging {}
+
 final class CaptureLocation: NSObject, CLLocationManagerDelegate, @unchecked Sendable {
     static let shared = CaptureLocation()
     private let lock = NSLock()
     private var lastLocation: CLLocation?
-    private var authorizationContinuation: CheckedContinuation<Void,Never>?
-    private var startUpdatesAfterAuthorization=false
-    private lazy var manager: CLLocationManager = {
-        let manager = CLLocationManager()
+    // Manager and session state are used only on the main queue. The cached fix
+    // is separately locked because camera metadata is assembled off that queue.
+    private var authorizationContinuations: [CheckedContinuation<Void,Never>] = []
+    private var updatesRequested = false
+    private let managerFactory: () -> CaptureLocationManaging
+    private lazy var manager: CaptureLocationManaging = {
+        let manager = managerFactory()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
         return manager
     }()
 
+    init(managerFactory: @escaping () -> CaptureLocationManaging = { CLLocationManager() }) {
+        self.managerFactory = managerFactory
+        super.init()
+    }
+
     func requestAuthorizationOnly() async {
-        if manager.authorizationStatus != .notDetermined { return }
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { continuation.resume(); return }
                 guard self.manager.authorizationStatus == .notDetermined else { continuation.resume(); return }
-                self.authorizationContinuation=continuation
-                self.manager.requestWhenInUseAuthorization()
+                let firstRequest = self.authorizationContinuations.isEmpty
+                self.authorizationContinuations.append(continuation)
+                if firstRequest { self.manager.requestWhenInUseAuthorization() }
             }
         }
     }
@@ -30,40 +50,70 @@ final class CaptureLocation: NSObject, CLLocationManagerDelegate, @unchecked Sen
     func request() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            if !self.updatesRequested { self.clearCachedLocation() }
+            self.updatesRequested = true
             switch self.manager.authorizationStatus {
             case .notDetermined:
-                self.startUpdatesAfterAuthorization=true
                 self.manager.requestWhenInUseAuthorization()
             case .authorizedAlways, .authorizedWhenInUse:
                 self.manager.startUpdatingLocation()
-            default: break
+            default:
+                self.manager.stopUpdatingLocation()
+                self.clearCachedLocation()
             }
         }
     }
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if manager.authorizationStatus != .notDetermined, let continuation=authorizationContinuation {
-            authorizationContinuation=nil; continuation.resume()
+        authorizationChanged()
+    }
+
+    func authorizationChanged() {
+        let status = manager.authorizationStatus
+        if status != .notDetermined {
+            let continuations = authorizationContinuations
+            authorizationContinuations.removeAll()
+            for continuation in continuations { continuation.resume() }
         }
-        if (manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse), startUpdatesAfterAuthorization {
-            startUpdatesAfterAuthorization=false
-            manager.startUpdatingLocation()
-        } else if manager.authorizationStatus != .notDetermined {
-            startUpdatesAfterAuthorization=false
+        if status == .authorizedAlways || status == .authorizedWhenInUse {
+            // A permission dialog may finish after the camera was suspended or
+            // Location was disabled. Authorization alone must not restart it.
+            if updatesRequested { manager.startUpdatingLocation() }
+        } else {
+            manager.stopUpdatingLocation()
+            clearCachedLocation()
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let value = locations.last, value.horizontalAccuracy >= 0 else { return }
-        lock.lock(); lastLocation = value; lock.unlock()
-        if value.horizontalAccuracy <= 50 { manager.stopUpdatingLocation() }
+        acceptLocations(locations)
     }
 
-    func stop() { DispatchQueue.main.async { [weak self] in self?.manager.stopUpdatingLocation() } }
+    func acceptLocations(_ locations: [CLLocation]) {
+        let status = manager.authorizationStatus
+        guard updatesRequested, status == .authorizedAlways || status == .authorizedWhenInUse else { return }
+        guard let value = locations.last, value.horizontalAccuracy >= 0 else { return }
+        lock.lock(); lastLocation = value; lock.unlock()
+        // Keep updates active for the requested foreground camera session. A
+        // one-shot fix becomes stale as the photographer moves or keeps shooting.
+    }
 
-    func current(maxAge: TimeInterval = 300) -> CLLocation? {
+    func stop() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.updatesRequested = false
+            self.manager.stopUpdatingLocation()
+            self.clearCachedLocation()
+        }
+    }
+
+    private func clearCachedLocation() {
+        lock.lock(); lastLocation = nil; lock.unlock()
+    }
+
+    func current(maxAge: TimeInterval = 300, now: Date = Date()) -> CLLocation? {
         lock.lock(); defer { lock.unlock() }
-        guard let value = lastLocation, abs(value.timestamp.timeIntervalSinceNow) <= maxAge else { return nil }
+        guard let value = lastLocation, abs(value.timestamp.timeIntervalSince(now)) <= maxAge else { return nil }
         return value
     }
 

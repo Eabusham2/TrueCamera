@@ -102,6 +102,7 @@ Histogram, zebras and peaking are **preview-only aids**. They describe the proce
 - AI inference is local. The app has no account, API-key field, analytics endpoint or image-upload service.
 - Original files are saved in `Documents/Captures` before Photos export. Denial of Photos access retains the local originals and sharing still works.
 - Native camera metadata and Live pairing metadata are preserved. GPS is added only with permission and a recent location fix. PhotoKit creation time/location are populated from the capture.
+- Still frames taken during video retain their source-frame time, permitted GPS and enabled author fields, and are labelled with their video resolution. They do not invent sensor ISO, shutter, aperture or lens EXIF when the preview provides no per-frame sensor metadata.
 - RAW-master exports use the DNG as the primary Photos resource and retain the processed companion. Combined Bayer + Live exports preserve the native Live still/movie pairing. Duplicate exports and deletion during an active export are guarded.
 - Location is enabled by default and can be turned off. Optional custom author/title metadata is off by default.
 - Routine successful saves are silent. Failed export or capture is reported.
@@ -131,6 +132,7 @@ Open `TrueCamera.xcodeproj` after generating it with your selected Xcode. There 
 6. Build the Release **ARM64 iPhone** app.
 7. Package an **unsigned IPA** and verify its bundle, platform, privacy descriptions, Mach-O architecture and absence of signing material.
 8. Upload the IPA, SHA-256 and build metadata; publish a tagged GitHub release only after all preceding gates succeed.
+9. Download all three published assets, recompute their checksums, verify the tag/source/workflow identity and revalidate the downloaded unsigned device IPA. A missing, mismatched or incomplete release fails CI.
 
 **The IPA is unsigned.** Sign it using your own certificate/profile or a compatible sideloading tool before installation. CI does not possess or require an Apple developer identity.
 

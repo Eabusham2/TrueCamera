@@ -12,6 +12,7 @@ struct PreviewFrame {
     let target: Point2?
     let trackingGood: Bool
     let diagnostics: FrameDiagnostics
+    var hostTime: Double? = nil
 }
 /// Holds only ONE latest frame. Slow UI consumers cannot accumulate camera buffers.
 final class PreviewFeed: @unchecked Sendable {
@@ -247,7 +248,7 @@ final class FrameProcessor {
         let previewImage = renderer.transform(source,plan:previewPlan)
         let target = settings.zoomLock ? Point2(0.5,0.5) : nil
         if recording {
-            let early=PreviewFrame(image:previewImage,recordingImage:previewImage,overview:source,plan:previewPlan,recordingPlan:previewPlan,target:target,trackingGood:settings.zoomLock && !previewPlan.wasClamped,diagnostics:diagnostics)
+            let early=PreviewFrame(image:previewImage,recordingImage:previewImage,overview:source,plan:previewPlan,recordingPlan:previewPlan,target:target,trackingGood:settings.zoomLock && !previewPlan.wasClamped,diagnostics:diagnostics,hostTime:hostTime)
             preview.publish(early)
         }
         let recordingImage = recording ? renderer.transform(source,plan:capturePlan) : previewImage
@@ -260,7 +261,7 @@ final class FrameProcessor {
         diagnostics.detail=capturePlan.sourceDetail; diagnostics.upscaled=capturePlan.upscales
         diagnostics.deliveredFPS=fps; diagnostics.droppedFrames=dropped
         let frame=PreviewFrame(image:previewImage,recordingImage:recordingImage,overview:source,plan:previewPlan,recordingPlan:capturePlan,target:target,
-            trackingGood:settings.zoomLock && !previewPlan.wasClamped,diagnostics:diagnostics)
+            trackingGood:settings.zoomLock && !previewPlan.wasClamped,diagnostics:diagnostics,hostTime:hostTime)
         preview.publish(frame)
         return frame
     }

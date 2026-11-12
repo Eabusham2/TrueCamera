@@ -299,6 +299,11 @@ struct CameraSettings: Codable, Equatable {
     // Native still resources are never passed through our pixel renderer.
     var isProcessedPhoto: Bool { false }
     var captureFPS: Double { mode == .slowMotion ? Double(slowMotionFPS) : fps }
+    /// Shutter angle is a video preference. Preserve it while taking photos, but
+    /// use the photo's displayed shutter duration for every manual hardware path.
+    var manualExposureDuration: Double {
+        shutterAngleMode && mode.isMovie ? (shutterAngle / 360) / captureFPS : 1 / shutterDenominator
+    }
     var effectiveOutputResolution: Resolution {
         if actionStabilization && !resolution.isRAWFrameSize && resolution.longEdge > Resolution.action2_8K.longEdge {
             return .action2_8K
