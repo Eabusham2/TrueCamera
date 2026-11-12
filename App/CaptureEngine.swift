@@ -978,21 +978,21 @@ final class CaptureEngine: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
                 self.frameQueue.async { [self] in
                     do {
                         let packet = try result.get()
-                        let saved = try savePhoto(packet)
-                        for draft in saved.drafts { deliver(.success(draft)) }
+                        let saved = try self.savePhoto(packet)
+                        for draft in saved.drafts { self.deliver(.success(draft)) }
                         if let warning = saved.warning {
-                            deliver(.failure(CameraFailure.message("Partial capture: completed originals were saved. \(warning)")))
+                            self.deliver(.failure(CameraFailure.message("Partial capture: completed originals were saved. \(warning)")))
                         }
-                        sessionQueue.async { [self] in
-                            photoJobs.removeValue(forKey: id)
+                        self.sessionQueue.async { [self] in
+                            self.photoJobs.removeValue(forKey: id)
                             let requiredRAWExists = steps[index].rawKind == .none || saved.rawSaved
-                            if requiredRAWExists && index + 1 < steps.count { capturePhotoStep(steps, index: index + 1, config: config, pairID: pairID) }
-                            else { finishPhotoSequence() }
+                            if requiredRAWExists && index + 1 < steps.count { self.capturePhotoStep(steps, index: index + 1, config: config, pairID: pairID) }
+                            else { self.finishPhotoSequence() }
                         }
                     } catch {
                         let message = index > 0 ? "The RAW master was saved, but its Live companion failed: \(error.localizedDescription)" : error.localizedDescription
-                        deliver(.failure(CameraFailure.message(message)))
-                        sessionQueue.async { [self] in photoJobs.removeValue(forKey: id); finishPhotoSequence() }
+                        self.deliver(.failure(CameraFailure.message(message)))
+                        self.sessionQueue.async { [self] in self.photoJobs.removeValue(forKey: id); self.finishPhotoSequence() }
                     }
                 }
             }
