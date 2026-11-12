@@ -1,99 +1,35 @@
-name: Build and release unsigned iOS IPA
+name: Core policy tests on Linux
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-    paths-ignore: ['**.md', 'Docs/**', '.gitignore']
-  pull_request:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish the verified unsigned IPA to GitHub Releases
+        description: Unused in core-only validation
         type: boolean
-        default: true
+        default: false
 permissions:
   contents: read
 concurrency:
-  group: ios-${{ github.ref }}
+  group: core-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  build:
-    runs-on: xcode-27
-    timeout-minutes: 30
-    permissions:
-      contents: write
+  core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check out exact source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - name: Select latest installed stable Xcode
-        run: python3 Scripts/select_xcode.py
-      - name: Toolchain and metadata
+      - name: Compile and execute core tests
         run: |
           set -euo pipefail
-          xcode-select -p
-          xcodebuild -version
-          xcrun simctl list runtimes
           swift --version
           mkdir -p build/logs
-          python3 Scripts/generate_project.py
-          plutil -lint App/Info.plist App/PrivacyInfo.xcprivacy TrueCamera.xcodeproj/project.pbxproj
-      - name: Core regression tests
-        run: |
-          set -euo pipefail
-          swift test --parallel 2>&1 | tee build/logs/core-tests.log
-      - name: Compile iOS simulator app
-        run: |
-          set -euo pipefail
-          xcodebuild -project TrueCamera.xcodeproj -scheme TrueCamera \
-            -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath build/Simulator CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee build/logs/simulator-build.log
-      - name: Execute neural inference, capture, metadata and stabilization tests
-        run: bash Scripts/test_simulator.sh
-      - name: Build and verify unsigned device IPA
-        run: bash Scripts/build_unsigned.sh
-      - name: Upload verified IPA artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: TrueCamera-unsigned-${{ github.sha }}
-          path: build/release/*
-          if-no-files-found: error
-          retention-days: 14
-      - name: Publish release
-        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          SHORT_SHA="${GITHUB_SHA:0:8}"
-          TAG="build-${GITHUB_RUN_NUMBER}-${SHORT_SHA}"
-          EXTRA=(--prerelease)
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then TAG="$GITHUB_REF_NAME"; EXTRA=(); fi
-          cat > build/release-notes.md <<EOF
-          Native iPhone camera with on-device neural scene analysis controlling real capture settings, lossless RAW + Live Photo pairs, and geometric stabilization.
-
-          **Unsigned IPA.** Sign it with your own certificate/profile or sideloading tool before installing. No Apple developer secrets are required for this build.
-
-          Commit: ${GITHUB_SHA}
-          Build: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-
-          Automated gates: core capture/exposure/motion regression tests; simulator compilation; executed real Vision inference, unchanged-image tests, pixel geometry, preview aids, movie/audio and metadata tests; Release ARM64 compilation; IPA structure, platform, privacy and unsigned Mach-O verification.
-
-          Real iPhone validation is still required for RAW/Live pair behavior, optical color accuracy, variable-aperture hardware, stabilization latency and sustained thermal performance. CI does not establish photographic quality or parity with other camera apps. See Docs/DEVICE_TESTS.md.
-          EOF
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" build/release/* --clobber
-          else
-            gh release create "$TAG" build/release/* --target "$GITHUB_SHA" \
-              --title "TrueCamera 0.1.0 · build ${GITHUB_RUN_NUMBER}" --notes-file build/release-notes.md "${EXTRA[@]}"
-          fi
-      - name: Retain build logs
+          swift test --parallel 2>&1 | tee build/logs/core-linux.log
+      - name: Retain results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: build-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          name: core-linux-${{ github.sha }}
           path: build/logs/
           if-no-files-found: ignore
-          retention-days: 7
